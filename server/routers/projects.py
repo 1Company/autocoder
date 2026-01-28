@@ -260,6 +260,21 @@ async def delete_project(name: str, delete_files: bool = False):
             detail="Cannot delete project while agent is running. Stop the agent first."
         )
 
+    # Clean up manager registries to prevent memory leaks
+    from ..services.process_manager import remove_manager
+    from ..services.dev_server_manager import remove_devserver_manager
+    from ..services.terminal_manager import cleanup_project_terminals
+    from ..services.spec_chat_session import remove_session as remove_spec_session
+    from ..services.expand_chat_session import remove_expand_session
+    from ..services.assistant_chat_session import remove_session as remove_assistant_session
+
+    await remove_manager(name, project_dir)
+    await remove_devserver_manager(name, project_dir)
+    await cleanup_project_terminals(name)
+    await remove_spec_session(name)
+    await remove_expand_session(name)
+    await remove_assistant_session(name)
+
     # Optionally delete files
     if delete_files and project_dir.exists():
         try:

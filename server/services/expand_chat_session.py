@@ -28,6 +28,10 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of messages to keep in memory per session
+# Older messages are trimmed to prevent unbounded memory growth
+MAX_MESSAGES = 100
+
 # Environment variables to pass through to Claude CLI for API configuration
 API_ENV_VARS = [
     "ANTHROPIC_BASE_URL",
@@ -245,6 +249,9 @@ class ExpandChatSession:
             "has_attachments": bool(attachments),
             "timestamp": datetime.now().isoformat()
         })
+        # Trim old messages to prevent unbounded memory growth
+        if len(self.messages) > MAX_MESSAGES:
+            self.messages = self.messages[-MAX_MESSAGES:]
 
         try:
             # Use lock to prevent concurrent queries from corrupting the response stream
@@ -313,6 +320,9 @@ class ExpandChatSession:
                                 "content": text,
                                 "timestamp": datetime.now().isoformat()
                             })
+                            # Trim old messages to prevent unbounded memory growth
+                            if len(self.messages) > MAX_MESSAGES:
+                                self.messages = self.messages[-MAX_MESSAGES:]
 
         # Check for feature creation blocks in full response (handle multiple blocks)
         features_matches = re.findall(

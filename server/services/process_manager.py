@@ -548,6 +548,36 @@ async def cleanup_all_managers() -> None:
         _managers.clear()
 
 
+async def remove_manager(project_name: str, project_dir: Path) -> bool:
+    """
+    Remove a manager from the registry for a specific project.
+
+    Called when a project is deleted to prevent registry growth.
+    Stops the agent if running before removal.
+
+    Args:
+        project_name: Name of the project
+        project_dir: Absolute path to the project directory
+
+    Returns:
+        True if a manager was removed, False if none existed
+    """
+    key = (project_name, str(project_dir.resolve()))
+    manager = None
+
+    with _managers_lock:
+        manager = _managers.pop(key, None)
+
+    if manager:
+        try:
+            if manager.status != "stopped":
+                await manager.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping manager during removal for {project_name}: {e}")
+        return True
+    return False
+
+
 def cleanup_orphaned_locks() -> int:
     """
     Clean up orphaned lock files from previous server runs.

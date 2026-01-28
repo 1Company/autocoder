@@ -25,6 +25,10 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of messages to keep in memory per session
+# Older messages are trimmed to prevent unbounded memory growth
+MAX_MESSAGES = 100
+
 # Environment variables to pass through to Claude CLI for API configuration
 API_ENV_VARS = [
     "ANTHROPIC_BASE_URL",
@@ -253,6 +257,9 @@ class SpecChatSession:
             "has_attachments": bool(attachments),
             "timestamp": datetime.now().isoformat()
         })
+        # Trim old messages to prevent unbounded memory growth
+        if len(self.messages) > MAX_MESSAGES:
+            self.messages = self.messages[-MAX_MESSAGES:]
 
         try:
             async for chunk in self._query_claude(user_message, attachments):
@@ -353,6 +360,9 @@ class SpecChatSession:
                                 "content": text,
                                 "timestamp": datetime.now().isoformat()
                             })
+                            # Trim old messages to prevent unbounded memory growth
+                            if len(self.messages) > MAX_MESSAGES:
+                                self.messages = self.messages[-MAX_MESSAGES:]
 
                     elif block_type == "ToolUseBlock" and hasattr(block, "name"):
                         tool_name = block.name

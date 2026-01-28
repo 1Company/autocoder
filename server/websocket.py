@@ -78,8 +78,11 @@ class AgentTracker:
     types for the same feature.
     """
 
+    # Maximum time (seconds) an agent entry can exist without updates before being considered stale
+    STALE_THRESHOLD_SECONDS = 600  # 10 minutes
+
     def __init__(self):
-        # (feature_id, agent_type) -> {name, state, last_thought, agent_index, agent_type}
+        # (feature_id, agent_type) -> {name, state, last_thought, agent_index, agent_type, last_updated}
         self.active_agents: dict[tuple[int, str], dict] = {}
         self._next_agent_index = 0
         self._lock = asyncio.Lock()
@@ -154,6 +157,7 @@ class AgentTracker:
                     'state': 'thinking',
                     'feature_name': f'Feature #{feature_id}',
                     'last_thought': None,
+                    'last_updated': datetime.now(),
                 }
 
             agent = self.active_agents[key]
@@ -172,6 +176,7 @@ class AgentTracker:
             # Only emit update if state changed or we have a new thought
             if state != agent['state'] or thought != agent['last_thought']:
                 agent['state'] = state
+                agent['last_updated'] = datetime.now()
                 if thought:
                     agent['last_thought'] = thought
 
@@ -220,6 +225,32 @@ class AgentTracker:
             self.active_agents.clear()
             self._next_agent_index = 0
 
+    async def cleanup_stale_agents(self) -> int:
+        """Remove stale agent entries that haven't been updated recently.
+
+        This prevents memory leaks from agents that crashed without
+        emitting completion messages.
+
+        Returns:
+            Number of stale agents removed
+        """
+        async with self._lock:
+            now = datetime.now()
+            stale_keys = []
+
+            for key, agent in self.active_agents.items():
+                last_updated = agent.get('last_updated')
+                if last_updated:
+                    age_seconds = (now - last_updated).total_seconds()
+                    if age_seconds > self.STALE_THRESHOLD_SECONDS:
+                        stale_keys.append(key)
+
+            for key in stale_keys:
+                del self.active_agents[key]
+                logger.info(f"Cleaned up stale agent entry: feature_id={key[0]}, type={key[1]}")
+
+            return len(stale_keys)
+
     async def _handle_agent_start(self, feature_id: int, line: str, agent_type: str = "coding") -> dict | None:
         """Handle agent start message from orchestrator."""
         async with self._lock:
@@ -240,6 +271,7 @@ class AgentTracker:
                 'state': 'thinking',
                 'feature_name': feature_name,
                 'last_thought': 'Starting work...',
+                'last_updated': datetime.now(),
             }
 
             return {
@@ -573,12 +605,21 @@ def validate_project_name(name: str) -> bool:
     return bool(re.match(r'^[a-zA-Z0-9_-]{1,50}$', name))
 
 
-async def poll_progress(websocket: WebSocket, project_name: str, project_dir: Path):
-    """Poll database for progress changes and send updates."""
+async def poll_progress(
+    websocket: WebSocket,
+    project_name: str,
+    project_dir: Path,
+    agent_tracker: AgentTracker | None = None
+):
+    """Poll database for progress changes and send updates.
+
+    Also periodically cleans up stale agent tracker entries to prevent memory leaks.
+    """
     count_passing_tests = _get_count_passing_tests()
     last_passing = -1
     last_in_progress = -1
     last_total = -1
+    cleanup_counter = 0
 
     while True:
         try:
@@ -598,6 +639,14 @@ async def poll_progress(websocket: WebSocket, project_name: str, project_dir: Pa
                     "total": total,
                     "percentage": round(percentage, 1),
                 })
+
+            # Cleanup stale agents every 30 polls (~60 seconds)
+            cleanup_counter += 1
+            if agent_tracker and cleanup_counter >= 30:
+                cleanup_counter = 0
+                cleaned = await agent_tracker.cleanup_stale_agents()
+                if cleaned > 0:
+                    logger.info(f"Cleaned up {cleaned} stale agent(s) for {project_name}")
 
             await asyncio.sleep(2)  # Poll every 2 seconds
         except asyncio.CancelledError:
@@ -724,8 +773,8 @@ async def project_websocket(websocket: WebSocket, project_name: str):
     devserver_manager.add_output_callback(on_dev_output)
     devserver_manager.add_status_callback(on_dev_status_change)
 
-    # Start progress polling task
-    poll_task = asyncio.create_task(poll_progress(websocket, project_name, project_dir))
+    # Start progress polling task (also handles stale agent cleanup)
+    poll_task = asyncio.create_task(poll_progress(websocket, project_name, project_dir, agent_tracker))
 
     try:
         # Send initial agent status

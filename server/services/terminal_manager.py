@@ -754,3 +754,40 @@ async def cleanup_all_terminals() -> None:
         _terminal_metadata.clear()
 
     logger.info("All terminal sessions cleaned up")
+
+
+async def cleanup_project_terminals(project_name: str) -> int:
+    """
+    Stop and remove all terminal sessions for a specific project.
+
+    Called when a project is deleted to prevent registry growth.
+
+    Args:
+        project_name: Name of the project
+
+    Returns:
+        Number of sessions cleaned up
+    """
+    sessions_to_stop = []
+
+    # Get sessions for this project
+    with _sessions_lock:
+        project_sessions = _sessions.pop(project_name, {})
+        sessions_to_stop = list(project_sessions.values())
+
+    # Stop all sessions
+    for session in sessions_to_stop:
+        try:
+            if session.is_active:
+                await session.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping terminal for {project_name}: {e}")
+
+    # Clear metadata
+    with _metadata_lock:
+        _terminal_metadata.pop(project_name, None)
+
+    if sessions_to_stop:
+        logger.info(f"Cleaned up {len(sessions_to_stop)} terminal(s) for project {project_name}")
+
+    return len(sessions_to_stop)
